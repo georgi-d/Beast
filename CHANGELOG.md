@@ -1,3 +1,10 @@
+ZLib
+
+* Add ZLib module
+
+--------------------------------------------------------------------------------
+
+>>>>>>> 75e5272... Add zlib module:
 1.0.0-b18
 
 * Increase optimization settings for MSVC builds
@@ -23,6 +30,7 @@ Extras
 * unit_test::suite fixes:
   - New overload of fail() specifies file and line
   - BEAST_EXPECTS only evaluates the reason string on a failure
+* Add zlib module
 
 --------------------------------------------------------------------------------
 
