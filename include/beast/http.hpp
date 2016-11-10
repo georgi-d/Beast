@@ -12,7 +12,7 @@
 #include <beast/http/basic_parser_v1.hpp>
 #include <beast/http/body_type.hpp>
 #include <beast/http/empty_body.hpp>
-#include <beast/http/headers.hpp>
+#include <beast/http/fields.hpp>
 #include <beast/http/message.hpp>
 #include <beast/http/parse.hpp>
 #include <beast/http/parse_error.hpp>
