@@ -20,7 +20,10 @@ namespace http {
 namespace detail {
 
 template<class Stream,
-    class DynamicBuffer, class Parser, class Handler>
+         class DynamicBuffer,
+         class Parser,
+         class CompletionCondition,
+         class Handler>
 class parse_op
 {
     using alloc_type =
@@ -32,19 +35,24 @@ class parse_op
         DynamicBuffer& db;
         Parser& p;
         Handler h;
+        CompletionCondition condition;
         bool got_some = false;
         bool cont;
         int state = 0;
+        std::size_t parsed = 0;
 
         template<class DeducedHandler>
-        data(DeducedHandler&& h_, Stream& s_,
-                DynamicBuffer& sb_, Parser& p_)
+        data(DeducedHandler&& h_,
+             CompletionCondition condition_,
+             Stream& s_,
+             DynamicBuffer& sb_, Parser& p_)
+
             : s(s_)
             , db(sb_)
             , p(p_)
             , h(std::forward<DeducedHandler>(h_))
-            , cont(boost_asio_handler_cont_helpers::
-                is_continuation(h))
+            , condition(condition_)
+            , cont(boost_asio_handler_cont_helpers:: is_continuation(h))
         {
             BOOST_ASSERT(! p.complete());
         }
@@ -56,11 +64,17 @@ public:
     parse_op(parse_op&&) = default;
     parse_op(parse_op const&) = default;
 
-    template<class DeducedHandler, class... Args>
-    parse_op(DeducedHandler&& h, Stream& s, Args&&... args)
+    template<class DeducedHandler, class DeducedCondition, class... Args>
+    parse_op(DeducedHandler&& h,
+             DeducedCondition&& c,
+             Stream& s,
+             Args&&... args)
+
         : d_(std::allocate_shared<data>(alloc_type{h},
-            std::forward<DeducedHandler>(h), s,
-                std::forward<Args>(args)...))
+            std::forward<DeducedHandler>(h),
+            std::forward<DeducedCondition>(c),
+            s,
+            std::forward<Args>(args)...))
     {
         (*this)(error_code{}, 0, false);
     }
@@ -101,9 +115,9 @@ public:
 };
 
 template<class Stream,
-    class DynamicBuffer, class Parser, class Handler>
+    class DynamicBuffer, class Parser, class CompletionCondition, class Handler>
 void
-parse_op<Stream, DynamicBuffer, Parser, Handler>::
+parse_op<Stream, DynamicBuffer, Parser, CompletionCondition, Handler>::
 operator()(error_code ec, std::size_t bytes_transferred, bool again)
 {
     auto& d = *d_;
@@ -129,8 +143,9 @@ operator()(error_code ec, std::size_t bytes_transferred, bool again)
             {
                 d.got_some = true;
                 d.db.consume(used);
+                d.parsed += used;
             }
-            if(d.p.complete())
+            if(d.p.complete() || d.condition(d.parsed))
             {
                 // call handler
                 d.state = 99;
@@ -149,7 +164,7 @@ operator()(error_code ec, std::size_t bytes_transferred, bool again)
         {
             // read
             d.state = 2;
-            auto const size = 
+            auto const size =
                 read_size_helper(d.db, 65536);
             BOOST_ASSERT(size > 0);
             d.s.async_read_some(
@@ -200,7 +215,8 @@ operator()(error_code ec, std::size_t bytes_transferred, bool again)
             BOOST_ASSERT(used > 0);
             d.got_some = true;
             d.db.consume(used);
-            if(d.p.complete())
+            d.parsed += used;
+            if(d.p.complete() || d.condition(d.parsed))
             {
                 // call handler
                 d.state = 99;
@@ -282,6 +298,39 @@ parse(SyncReadStream& stream, DynamicBuffer& dynabuf,
 }
 
 template<class AsyncReadStream,
+    class DynamicBuffer, class Parser, class CompletionCondition, class ReadHandler>
+typename async_completion<
+    ReadHandler, void(error_code)>::result_type
+async_parse(AsyncReadStream& stream,
+            DynamicBuffer& dynabuf,
+            Parser& parser,
+            CompletionCondition condition,
+            ReadHandler&& handler)
+{
+    static_assert(is_AsyncReadStream<AsyncReadStream>::value,
+        "AsyncReadStream requirements not met");
+    static_assert(is_DynamicBuffer<DynamicBuffer>::value,
+        "DynamicBuffer requirements not met");
+    static_assert(is_Parser<Parser>::value,
+        "Parser requirements not met");
+    beast::async_completion<ReadHandler,
+        void(error_code)> completion(handler);
+
+    detail::parse_op<AsyncReadStream,
+                     DynamicBuffer,
+                     Parser,
+                     decltype(condition),
+                     decltype(completion.handler)>{completion.handler,
+                                                   condition,
+                                                   stream,
+                                                   dynabuf,
+                                                   parser};
+
+    return completion.result.get();
+}
+
+
+template<class AsyncReadStream,
     class DynamicBuffer, class Parser, class ReadHandler>
 typename async_completion<
     ReadHandler, void(error_code)>::result_type
@@ -294,12 +343,8 @@ async_parse(AsyncReadStream& stream,
         "DynamicBuffer requirements not met");
     static_assert(is_Parser<Parser>::value,
         "Parser requirements not met");
-    beast::async_completion<ReadHandler,
-        void(error_code)> completion(handler);
-    detail::parse_op<AsyncReadStream, DynamicBuffer,
-        Parser, decltype(completion.handler)>{
-            completion.handler, stream, dynabuf, parser};
-    return completion.result.get();
+    return async_parse(stream, dynabuf, parser, [](std::size_t){ return false; },
+                       std::forward<ReadHandler>(handler));
 }
 
 } // http
